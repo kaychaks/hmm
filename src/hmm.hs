@@ -36,7 +36,6 @@ type Distribution (s :: Nat) a = V s a
 -- | Utility Functions
 
 -- | Multiply each number by a constant such that the sum is 1.0
-
 normalise :: (Fractional a, Foldable f, Functor f) => f a -> f a
 normalise xs | null xs = xs
              | otherwise =
@@ -108,6 +107,15 @@ mkHMM1 ts ss = let f = (_V #) . over mapped toV
 sensorDiagonal :: (KnownNat s, KnownNat t, Eq b) => HMM s t a b -> b -> Maybe (SensorDiagonal s a)
 sensorDiagonal hmm e = findIndexOf (sDist.folded) (== e) hmm >>= (\i -> hmm ^? sModel . ix i)
 
+-- | Filtering message propagated forward
+forward :: (KnownNat s) => HMM s t R b -> SensorDiagonal s R  -> Message s R -> Message s R
+forward hmm ot f = normalise (ot !*! Linear.transpose (hmm ^. tModel) !*! f)
+
+-- | Smoothing message propagated backward
+backward :: (KnownNat s) => HMM s t R b -> SensorDiagonal s R -> Message s R -> Message s R
+backward hmm ok1 bk2 = (hmm ^. tModel) !*! ok1 !*! bk2
+
+
 -- | Fixed Lag Smoothing
 
 -- | Persistent State
@@ -122,15 +130,6 @@ makeLenses ''Persistent
 -- | State to start with
 persistentInit :: forall s b d. (KnownNat s, Integral d) => Message s R -> Persistent s R b d
 persistentInit p = Persistent { _t = 1, _f_msg = p, _b = identity, _e_td_t = Vec.empty}
-
--- | Filtering message propagated forward
-forward :: (KnownNat s) => HMM s t R b -> SensorDiagonal s R  -> Message s R -> Message s R
-forward hmm ot f = normalise (ot !*! Linear.transpose (hmm ^. tModel) !*! f)
-
--- | Smoothing message propagated backward
-backward :: (KnownNat s) => HMM s t R b -> SensorDiagonal s R -> Message s R -> Message s R
-backward hmm ok1 bk2 = (hmm ^. tModel) !*! ok1 !*! bk2
-
 
 -- | Online Algorithm for smoothing with a fixed time lag of `d` steps
 -- hmm -- HMM model
@@ -166,34 +165,41 @@ fixedLagSmoothing hmm d e = do
 -- evs - list of evidences for each time step
 forwardBackward :: forall s t u b . (KnownNat t, KnownNat s, KnownNat u, Eq b) => HMM s u R b -> V t b -> V t (Distribution s R)
 forwardBackward hmm evs = let
-  -- forward messages
-  fv :: V (t + 1) (Message s R)
-  fv = V $ Vec.fromList $ foldl' (\m@(x:_) e -> forward hmm (sensorDiagonal hmm e ^?! _Just) x : m) [hmm ^. prior] evs
   -- reifying the number of evidences
   tNat = dim evs
+  -- forward messages from time t .. 0
+  fv :: V (t + 1) (Message s R)
+  fv = V $ Vec.fromList $ foldl' (\m@(x:_) e -> forward hmm (sensorDiagonal hmm e ^?! _Just) x : m) [hmm ^. prior] evs
   -- getting rid of the prior message from the end of the list
+  -- so now forward messages vector is from time t .. 1
   fv_0 :: V t (Message s R)
   fv_0 = V $ Vec.fromList $ fv ^.. taking tNat traversed
-  --  backward messages 
+
+  --  backward messages from time 1 .. t
   bs :: V t (Message s R)
   bs = V $ Vec.fromList $ foldl' (\m@(x:_) e -> backward hmm (sensorDiagonal hmm e ^?! _Just) x : m) [unitColumn] $ reverseV evs
+  -- reversing the backward messages
+  -- so now the backward messages vector is from time t .. 1
+  revBs :: V t (Message s R)
+  revBs = reverseV bs
   in
     -- smoothing probabilities in reverse order of the list of evidences
-    liftA2 (\f b' -> extract1 $ normalise $ f !**! b') fv_0 (reverseV bs)
+    -- i.e. starting from time t .. 1
+    liftA2 (\f b' -> extract1 $ normalise $ f !**! b') fv_0 revBs
 
 -- | execution
 umbrellaHMM :: HMM 2 2 R Bool
 umbrellaHMM = mkHMM1 (V2 (V2 0.7 0.3) (V2 0.3 0.7)) (V2 (V2 0.9 0.2) (V2 0.1 0.8))
 
-runFLSAlgo  :: [Bool] -> [Maybe (Distribution 2 String)]
-runFLSAlgo bs = let hmm = mkHMM1 (V2 (V2 0.7 0.3) (V2 0.3 0.7)) (V2 (V2 0.9 0.2) (V2 0.1 0.8))
-                    initState = persistentInit (V $ Vec.fromList [V $ Vec.singleton 0.5, V $ Vec.singleton 0.5]) :: Persistent 2 R Bool Integer
-                    algo = fixedLagSmoothing hmm 1
-                    a :: ([Maybe (Distribution 2 R)], Persistent 2 R Bool Integer)
-                    a = foldl' (\(rs, s) x -> runState (runMaybeT $ algo x) s & _1 #%~ ((rs ++) . pure)) ([], initState) bs
-                in
-                  (a ^. _1) & traverse.traverse.traverse %~ \(x :: R) -> printf "%.3f" x :: String
+runFLSAlgo  :: [Bool] -> Integer -> [Maybe (Distribution 2 String)]
+runFLSAlgo bs d = let hmm = mkHMM1 (V2 (V2 0.7 0.3) (V2 0.3 0.7)) (V2 (V2 0.9 0.2) (V2 0.1 0.8))
+                      initState = persistentInit (V $ Vec.fromList [V $ Vec.singleton 0.5, V $ Vec.singleton 0.5]) :: Persistent 2 R Bool Integer
+                      algo = fixedLagSmoothing hmm d
+                      a :: ([Maybe (Distribution 2 R)], Persistent 2 R Bool Integer)
+                      a = foldl' (\(rs, s) x -> runState (runMaybeT $ algo x) s & _1 #%~ ((rs ++) . pure)) ([], initState) bs
+                  in
+                    (a ^. _1) & traverse.traverse.traverse %~ \(x :: R) -> printf "%.3f" x :: String
 
 
-runFBAlgo :: (KnownNat t) =>V t Bool -> [Distribution 2 R]
-runFBAlgo bs = toList $ forwardBackward umbrellaHMM bs
+runFBAlgo :: [Bool] -> [Distribution 2 R]
+runFBAlgo bs = reifyVectorNat (Vec.fromList bs) (toList . forwardBackward umbrellaHMM)
