@@ -18,3 +18,4 @@ cabal.sandbox.config
 .stack-work/
 codex.tags
 .ghc.environment.*
+result
