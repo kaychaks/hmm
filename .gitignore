@@ -19,3 +19,6 @@ cabal.sandbox.config
 codex.tags
 .ghc.environment.*
 result
+.direnv
+.envrc
+*.json

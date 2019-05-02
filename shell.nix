@@ -1,7 +1,13 @@
 { nixpkgs ? import <nixpkgs> {}, compiler ? "default", withHoogle ? false}:
 let
   inherit (nixpkgs) pkgs;
-  drv = import ./default.nix { inherit nixpkgs compiler withHoogle; };
-  drvWithTools = pkgs.haskell.lib.addBuildDepends drv [ pkgs.cabal-install ];
+  haskellPackages = if compiler == "default"
+  then pkgs.haskellPackages
+  else pkgs.haskell.packages.${compiler};
+
+  project = import ./. { inherit nixpkgs compiler; };
 in
-if pkgs.lib.inNixShell then drvWithTools.env else drvWithTools
+haskellPackages.shellFor {
+  withHoogle = true;
+  packages = p: [ project.hmm ];
+}
