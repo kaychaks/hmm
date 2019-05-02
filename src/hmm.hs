@@ -15,8 +15,6 @@
 
 module HMM where
 
-import Prelude (undefined)
-import System.IO (print)
 import Text.Printf (printf)
 
 import Papa
@@ -232,20 +230,14 @@ fixedLagSmoothing hmm d e = do
       t += 1
       mzero
 
--- ** [/WIP/] Cost based HMM(cHMM)
+-- ** Cost based HMM(cHMM)
 --  Inference algo from cost-HMM paper
-
 cHMMInfer :: forall s u t b i. (KnownNat s, KnownNat u, KnownNat t, Eq b, Ord b, Integral i, Show i, Show b)
           => HMM s u R b -- ^ HMM model
-          -> V t i -- ^ state trajectory for time @1 .. t@; represented as @0@-based index of state
           -> V t b -- ^ evidence/observation trajectory for time @1 .. t@
-          -> IO R
-cHMMInfer hmm xs evs = do
-    let r = (\x y z -> (x * y) / z) <$> y0 <*> y1 <*> y2 $ zs
-    print zs
-    print $ y0 zs
-    print $ y1 zs
-    return r
+          -> V t i -- ^ state trajectory for time @1 .. t@; represented as @0@-based index of state
+          -> R
+cHMMInfer hmm evs xs = (\x y z -> (x * y) / z) <$> y0 <*> y1 <*> y2 $ zs
   where
     y0 :: Vec.Vector (i, b) -> R
     y0 = foldl' (\m (s,o') ->
@@ -258,7 +250,7 @@ cHMMInfer hmm xs evs = do
                    m *
                      bool
                       (hmm ^?! tModel . ix (vs ^?! ix (idx - 1) . _1 . to fromIntegral) . ix (fromIntegral s))
-                      (((Linear.transpose $ hmm ^. prior) !*! hmm ^. tModel) ^?! ix 0 . ix (fromIntegral s))
+                      ((Linear.transpose (hmm ^. prior) !*! hmm ^. tModel) ^?! ix 0 . ix (fromIntegral s))
                       (idx == 0))
             1 vs
 
@@ -277,27 +269,26 @@ cHMMInfer hmm xs evs = do
     zs = Vec.zip (toVector xs) (toVector evs)
 
 -- * Sample HMM Models
-
 umbrellaHMM :: HMM 2 2 R Bool
 umbrellaHMM = mkHMM1 (V2 (V2 0.7 0.3) (V2 0.3 0.7)) (V2 (V2 0.9 0.2) (V2 0.1 0.8))
-  
+
 swarmRobotsHMM :: HMM 4 4 R Int
 swarmRobotsHMM  = mkHMM_
                     (Just $ V $ Vec.replicate 4 (toV $ V1 0.25))
                     (V $ Vec.fromList
                       [
-                        (V $ Vec.fromList [0.7393859 , 0.2233470 , 0.0330670 , 0.0042001]),
-                        (V $ Vec.fromList [0.0928202 ,  0.7172515 ,  0.1719556 ,  0.0179727]),
-                        (V $ Vec.fromList [0.0139341 ,  0.1755173 ,  0.6936519 ,  0.1168966]),
-                        (V $ Vec.fromList [0.0047083 , 0.0403520 ,  0.2561893 ,  0.6987504])
+                        V $ Vec.fromList [0.7393859 , 0.2233470 , 0.0330670 , 0.0042001],
+                        V $ Vec.fromList [0.0928202 ,  0.7172515 ,  0.1719556 ,  0.0179727],
+                        V $ Vec.fromList [0.0139341 ,  0.1755173 ,  0.6936519 ,  0.1168966],
+                        V $ Vec.fromList [0.0047083 , 0.0403520 ,  0.2561893 ,  0.6987504]
                       ])
                     (V $ Vec.fromList [1..4])
-                    (Linear.transpose $ (V $ Vec.fromList
+                    (Linear.transpose (V $ Vec.fromList
                       [
-                        (V $ Vec.fromList [1.00000,  0.00000,   0.00000,   0.00000]),
-                        (V $ Vec.fromList [0.10000,  0.90000,   0.00000,   0.00000]),
-                        (V $ Vec.fromList [0.01000,  0.18000,   0.81000,   0.00000]),
-                        (V $ Vec.fromList [0.00100,  0.02700,   0.24300,   0.72900])
+                        V $ Vec.fromList [1.00000,  0.00000,   0.00000,   0.00000],
+                        V $ Vec.fromList [0.10000,  0.90000,   0.00000,   0.00000],
+                        V $ Vec.fromList [0.01000,  0.18000,   0.81000,   0.00000],
+                        V $ Vec.fromList [0.00100,  0.02700,   0.24300,   0.72900]
                       ]))
 
 -- * Main
