@@ -13,7 +13,32 @@
 --
 ---------------------------------
 
-module HMM where
+module HMM
+  (
+    HMM(..),
+    -- ** Smart Constructors
+    mkHMM_, mkHMM, mkHMM1, sensorDiagonal,
+    -- * Utility Functions
+    normalise, inverse, reverseV, extract1, (!**!), unitColumn,
+    -- ** Converting to/from HMatrix matrices
+    toHM, fromHM,
+    -- * Inference Algorithms
+    -- ** Forward-Backward
+    forward, backward, forwardBackward,
+    -- ** Fixed Lag Smoothing
+    fixedLagSmoothing,
+    -- * Sample HMM Models
+    umbrellaHMM,
+    -- * Miscellaneous
+    -- ** Type Synonyms
+    R, TransitionModel, SensorDiagonal, SensorModel, Message, Distribution,
+    -- ** Data Types
+    Persistent(..),
+    -- ** Test Functions
+    runFLSAlgo, runFBAlgo,
+    -- ** Lenses
+    prior, tModel, sDist, sModel
+) where
 
 import Text.Printf (printf)
 
@@ -33,15 +58,12 @@ import qualified Numeric.LinearAlgebra.Static as HM
 import qualified Numeric.LinearAlgebra as HMat
 -----------------------------------------------------------------------------------
 
--- * Type synonyms
 type R = Double
 type TransitionModel (s :: Nat) a = V s (V s a)
 type SensorDiagonal (s  :: Nat) a = V s (V s a)
 type SensorModel (t :: Nat) (s :: Nat) a = V t (SensorDiagonal s a)
 type Message (s :: Nat) a = V s (V 1 a)
 type Distribution (s :: Nat) a = V s a
-
--- * HMM
 
 -- | Hidden Markov Models
 data HMM (s :: Nat) (t :: Nat)  a b = HMM {
@@ -55,12 +77,8 @@ data HMM (s :: Nat) (t :: Nat)  a b = HMM {
   _sModel :: SensorModel t s a
   } deriving (Show)
 
--- |
--- === __HMM lenses__
---
 makeLenses ''HMM
 
--- ** Smart constructors
 mkHMM_ :: (KnownNat s, KnownNat t) => Maybe (Message s R) -- ^ Prior distribution on the initial state, @P(X0)@. If nothing then considered @(0.5,0.5)@
        -> TransitionModel s R -- ^ Transition Model as @sxs@ matrix, @s@ being the number of states
        -> V t b -- ^ evidence values vector map
@@ -88,7 +106,6 @@ sensorDiagonal :: (KnownNat s, KnownNat t, Eq b)
 sensorDiagonal hmm e = findIndexOf (sDist.folded) (== e) hmm >>= (\i -> hmm ^? sModel . ix i)
 
 
--- * Utility Functions
 
 -- | Multiply each number by a constant such that the sum is 1.0
 normalise :: (Fractional a, Foldable f, Functor f) => f a -> f a
@@ -119,8 +136,6 @@ as !**! bs = fromHM $ toHM as * toHM bs
 unitColumn :: forall s. KnownNat s => Message s R
 unitColumn = V $ Vec.replicate (fromIntegral $ natVal (Proxy :: Proxy s))  (toV $ V1 1.0)
 
--- ** Converting to/from __HMatrix__ matrices
-
 -- | take a @sxt@ 'Linear.V.V' matrix and give corresponding 'Numeric.LinearAlgebra.Static.L' version
 toHM :: (KnownNat s, KnownNat t) => V s (V t R) -> HM.L s t
 toHM = HM.matrix . foldMap (Vec.toList . toVector)
@@ -128,11 +143,6 @@ toHM = HM.matrix . foldMap (Vec.toList . toVector)
 -- | take a @sxt@ 'Numeric.LinearAlgebra.Static.L' matrix and give corresponding 'Linear.V.V' version
 fromHM :: (KnownNat s, KnownNat t) => HM.L s t -> V s (V t R)
 fromHM m = V $ V <$> Vec.fromList (fmap Vec.fromList $ HMat.toLists $ HM.extract m)
-
-
--- * Inference Algorithms
-
--- ** Forward-Backward
 
 -- | Filtering message propagated forward
 forward :: (KnownNat s) => HMM s t R b -> SensorDiagonal s R  -> Message s R -> Message s R
@@ -171,9 +181,6 @@ forwardBackward hmm evs = let
     liftA2 (\f b' -> extract1 $ normalise $ f !**! b') fv_0 revBs
 
 
--- ** Fixed Lag Smoothing
-
--- *** Data Types
 -- | Persistent State
 data Persistent (s :: Nat) a b d= Persistent {
   _t :: d, -- ^ current time
@@ -182,12 +189,8 @@ data Persistent (s :: Nat) a b d= Persistent {
   _e_td_t :: Vec.Vector b -- ^ double-ended list of evidence from @t − d@ to @t@
   } deriving (Show)
 
--- |
--- === __Persistent lenses__
---
 makeLenses ''Persistent
 
--- *** Smart constructor
 -- | Initial persistent state where
 --
 --  * t = 1
@@ -200,7 +203,6 @@ makeLenses ''Persistent
 persistentInit :: forall s b d. (KnownNat s, Integral d) => Message s R -> Persistent s R b d
 persistentInit p = Persistent { _t = 1, _f_msg = p, _b = identity, _e_td_t = Vec.empty}
 
--- *** Algo
 -- | Online Algorithm for smoothing with a fixed time lag of @d@ steps
 fixedLagSmoothing :: forall s u b d. (KnownNat s, KnownNat u, Eq b, Integral d)
                   => HMM s u R b -- ^ HMM model
@@ -230,68 +232,11 @@ fixedLagSmoothing hmm d e = do
       t += 1
       mzero
 
--- ** Cost based HMM(cHMM)
---  Inference algo from cost-HMM paper
-cHMMInfer :: forall s u t b i. (KnownNat s, KnownNat u, KnownNat t, Eq b, Ord b, Integral i, Show i, Show b)
-          => HMM s u R b -- ^ HMM model
-          -> V t b -- ^ evidence/observation trajectory for time @1 .. t@
-          -> V t i -- ^ state trajectory for time @1 .. t@; represented as @0@-based index of state
-          -> R
-cHMMInfer hmm evs xs = (\x y z -> (x * y) / z) <$> y0 <*> y1 <*> y2 $ zs
-  where
-    y0 :: Vec.Vector (i, b) -> R
-    y0 = foldl' (\m (s,o') ->
-            m *
-             sensorDiagonal hmm o' ^?! _Just . ix (fromIntegral s) . ix (fromIntegral s))
-            1
 
-    y1 :: Vec.Vector (i, b) -> R
-    y1 vs = ifoldl (\idx m (s,_) ->
-                   m *
-                     bool
-                      (hmm ^?! tModel . ix (vs ^?! ix (idx - 1) . _1 . to fromIntegral) . ix (fromIntegral s))
-                      ((Linear.transpose (hmm ^. prior) !*! hmm ^. tModel) ^?! ix 0 . ix (fromIntegral s))
-                      (idx == 0))
-            1 vs
-
-    y2 :: KnownNat s => Vec.Vector (i, b) -> R
-    y2 vs =  sum . extract1 $
-              ifoldl (\idx m (_,o') ->
-                 bool
-                     ((sensorDiagonal hmm o' ^?! _Just) !*! Linear.transpose (hmm ^. tModel) !*! m)
-                     ((sensorDiagonal hmm o' ^?! _Just) !*! Linear.transpose (hmm ^. tModel) !*! hmm ^. prior)
-                     (idx == 0)
-              )
-              (unitColumn :: Message s R)
-              vs
-
-    zs :: Vec.Vector (i, b)
-    zs = Vec.zip (toVector xs) (toVector evs)
-
--- * Sample HMM Models
 umbrellaHMM :: HMM 2 2 R Bool
 umbrellaHMM = mkHMM1 (V2 (V2 0.7 0.3) (V2 0.3 0.7)) (V2 (V2 0.9 0.2) (V2 0.1 0.8))
 
-swarmRobotsHMM :: HMM 4 4 R Int
-swarmRobotsHMM  = mkHMM_
-                    (Just $ V $ Vec.replicate 4 (toV $ V1 0.25))
-                    (V $ Vec.fromList
-                      [
-                        V $ Vec.fromList [0.7393859 , 0.2233470 , 0.0330670 , 0.0042001],
-                        V $ Vec.fromList [0.0928202 ,  0.7172515 ,  0.1719556 ,  0.0179727],
-                        V $ Vec.fromList [0.0139341 ,  0.1755173 ,  0.6936519 ,  0.1168966],
-                        V $ Vec.fromList [0.0047083 , 0.0403520 ,  0.2561893 ,  0.6987504]
-                      ])
-                    (V $ Vec.fromList [1..4])
-                    (Linear.transpose (V $ Vec.fromList
-                      [
-                        V $ Vec.fromList [1.00000,  0.00000,   0.00000,   0.00000],
-                        V $ Vec.fromList [0.10000,  0.90000,   0.00000,   0.00000],
-                        V $ Vec.fromList [0.01000,  0.18000,   0.81000,   0.00000],
-                        V $ Vec.fromList [0.00100,  0.02700,   0.24300,   0.72900]
-                      ]))
 
--- * Main
 runFLSAlgo  :: [Bool] -> Integer -> [Maybe (Distribution 2 String)]
 runFLSAlgo bs d = let hmm = mkHMM1 (V2 (V2 0.7 0.3) (V2 0.3 0.7)) (V2 (V2 0.9 0.2) (V2 0.1 0.8))
                       initState = persistentInit (V $ Vec.fromList [V $ Vec.singleton 0.5, V $ Vec.singleton 0.5]) :: Persistent 2 R Bool Integer

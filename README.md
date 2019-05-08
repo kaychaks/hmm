@@ -1,1 +1,1 @@
-Haskell implementation of Hidden Markov Models & related algorithms from AIMA book
+Haskell implementations of Hidden Markov Models & related algorithms from AIMA book and using them for approaches mentioned in the paper [Assessing the resilience of stochastic dynamic systems under partial observability](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0202337)
